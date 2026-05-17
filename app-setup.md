@@ -22,7 +22,7 @@ AWS ALB (Application Load Balancer)
 **AWS Services used:**
 - **ECR** – stores Docker images for all 4 services
 - **EKS** – Kubernetes cluster running all service pods
-- **RDS MySQL 8.0** – managed relational database (one instance, three databases)
+- **RDS** PostgreSQL 15 – managed relational database (one instance, database: `blogspace`)
 - **ALB** – routes external traffic into the cluster via AWS Load Balancer Controller
 
 ---
@@ -30,17 +30,18 @@ AWS ALB (Application Load Balancer)
 ## Environment Variables (set once, reuse everywhere)
 
 ```bash
-export AWS_ACCOUNT_ID=508262720940
-export AWS_REGION=us-west-2
-export CLUSTER_NAME=blog-cluster
+export AWS_ACCOUNT_ID=053160386547
+export AWS_REGION=ap-northeast-1
+export CLUSTER_NAME=quantam-cluster
 export ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 export APP_DOMAIN=amazontechspace.com
 
-# RDS
-export RDS_IDENTIFIER=blog-platform-db
-export RDS_HOST=blog-platform-db.cbgew20su7tx.us-west-2.rds.amazonaws.com
-export DB_USER=admin
-export DB_PASS=BlogPlatform2026
+# RDS (update RDS_HOST after the instance is created in Step 3)
+export RDS_IDENTIFIER=blogspace
+export RDS_HOST=<PASTE_RDS_ENDPOINT_HERE>
+export DB_USER=postgres
+export DB_PASS=Quant1234
+export DB_NAME=blogspace
 ```
 
 ---
@@ -152,7 +153,7 @@ echo "VPC ID: $VPC_ID"
 
 ---
 
-## Step 3 – Create the RDS MySQL Database
+## Step 3 – Create the RDS PostgreSQL Database
 
 ### 3a. Create a Security Group for RDS
 
@@ -160,7 +161,7 @@ echo "VPC ID: $VPC_ID"
 # Create the security group
 export RDS_SG_ID=$(aws ec2 create-security-group \
   --group-name blog-rds-sg \
-  --description "Allow MySQL from EKS nodes" \
+  --description "Allow PostgreSQL from EKS nodes" \
   --vpc-id $VPC_ID \
   --region $AWS_REGION \
   --query 'GroupId' --output text)
@@ -168,18 +169,18 @@ export RDS_SG_ID=$(aws ec2 create-security-group \
 echo "RDS Security Group: $RDS_SG_ID"
 ```
 
-Get the EKS node security group and allow it to reach MySQL:
+Get the EKS node security group and allow it to reach PostgreSQL:
 ```bash
 # Get the EKS node security group ID
 export EKS_NODE_SG=$(aws eks describe-cluster \
   --name $CLUSTER_NAME --region $AWS_REGION \
   --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text)
 
-# Allow MySQL (3306) from EKS nodes
+# Allow PostgreSQL (5432) from EKS nodes
 aws ec2 authorize-security-group-ingress \
   --group-id $RDS_SG_ID \
   --protocol tcp \
-  --port 3306 \
+  --port 5432 \
   --source-group $EKS_NODE_SG \
   --region $AWS_REGION
 ```
@@ -206,10 +207,11 @@ aws rds create-db-subnet-group \
 aws rds create-db-instance \
   --db-instance-identifier $RDS_IDENTIFIER \
   --db-instance-class db.t3.micro \
-  --engine mysql \
-  --engine-version 8.0 \
+  --engine postgres \
+  --engine-version 15 \
   --master-username $DB_USER \
   --master-user-password $DB_PASS \
+  --db-name $DB_NAME \
   --allocated-storage 20 \
   --storage-type gp2 \
   --vpc-security-group-ids $RDS_SG_ID \
@@ -237,23 +239,7 @@ export RDS_HOST=$(aws rds describe-db-instances \
 echo "RDS Endpoint: $RDS_HOST"
 ```
 
-### 3d. Create the Three Databases
-
-Run this from inside a temporary pod in the cluster (since RDS is not publicly accessible):
-
-```bash
-# Launch a temporary MySQL client pod
-kubectl run mysql-client --rm -it \
-  --image=mysql:8.0 \
-  --restart=Never \
-  -- mysql -h $RDS_HOST -u $DB_USER -p$DB_PASS \
-  -e "CREATE DATABASE IF NOT EXISTS auth_db;
-      CREATE DATABASE IF NOT EXISTS posts_db;
-      CREATE DATABASE IF NOT EXISTS comments_db;
-      SHOW DATABASES;"
-```
-
-Expected output includes: `auth_db`, `posts_db`, `comments_db`.
+> **Important:** Copy the RDS endpoint and update `k8s/secrets.yaml` — replace `<RDS_ENDPOINT>` with this value. Then re-apply the secret: `kubectl apply -f k8s/secrets.yaml`
 
 ---
 
@@ -320,28 +306,28 @@ kubectl get deployment -n kube-system aws-load-balancer-controller
 The Prisma schema is pushed to RDS **once** before deploying pods. Pods do NOT run
 `prisma db push` on startup (that would cause data loss with multiple replicas).
 
-Run from inside the cluster using a temporary pod:
+Run from inside the cluster using a temporary pod (RDS is not publicly accessible):
 
 ```bash
 # Auth DB schema
 kubectl run prisma-auth --rm -it \
   --image=$ECR_REGISTRY/blog-auth-service:latest \
   --restart=Never \
-  --env="DATABASE_URL=mysql://$DB_USER:$DB_PASS@$RDS_HOST:3306/auth_db" \
+  --env="DATABASE_URL=postgresql://$DB_USER:$DB_PASS@$RDS_HOST:5432/$DB_NAME?sslmode=require" \
   -- sh -c "npx prisma db push --skip-generate"
 
 # Posts DB schema
 kubectl run prisma-posts --rm -it \
   --image=$ECR_REGISTRY/blog-post-service:latest \
   --restart=Never \
-  --env="DATABASE_URL=mysql://$DB_USER:$DB_PASS@$RDS_HOST:3306/posts_db" \
+  --env="DATABASE_URL=postgresql://$DB_USER:$DB_PASS@$RDS_HOST:5432/$DB_NAME?sslmode=require" \
   -- sh -c "npx prisma db push --skip-generate"
 
 # Comments DB schema
 kubectl run prisma-comments --rm -it \
   --image=$ECR_REGISTRY/blog-comment-service:latest \
   --restart=Never \
-  --env="DATABASE_URL=mysql://$DB_USER:$DB_PASS@$RDS_HOST:3306/comments_db" \
+  --env="DATABASE_URL=postgresql://$DB_USER:$DB_PASS@$RDS_HOST:5432/$DB_NAME?sslmode=require" \
   -- sh -c "npx prisma db push --skip-generate"
 ```
 

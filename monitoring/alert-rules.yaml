@@ -1,0 +1,209 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: eks-custom-alert-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+
+  # ─── USE CASE 1 — Pod Down ────────────────────────────────────────────────
+  - name: pod-down
+    rules:
+      - alert: PodNotReady
+        expr: |
+          kube_pod_status_ready{condition="true"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod {{ $labels.pod }} is NOT ready"
+          description: >
+            Pod {{ $labels.pod }} in namespace {{ $labels.namespace }}
+            has been not-ready for more than 1 minute.
+            Check: kubectl describe pod {{ $labels.pod }} -n {{ $labels.namespace }}
+
+      - alert: PodNotRunning
+        expr: |
+          kube_pod_status_phase{phase=~"Failed|Unknown"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod {{ $labels.pod }} is in {{ $labels.phase }} state"
+          description: >
+            Pod {{ $labels.pod }} in namespace {{ $labels.namespace }}
+            is in phase {{ $labels.phase }}.
+
+  # ─── USE CASE 2 — High CPU ────────────────────────────────────────────────
+  - name: cpu-usage
+    rules:
+      - alert: ContainerHighCPU
+        expr: |
+          (
+            rate(container_cpu_usage_seconds_total{
+              container!="",
+              container!="POD",
+              namespace!="kube-system"
+            }[5m])
+            /
+            on(namespace, pod, container)
+            kube_pod_container_resource_limits{resource="cpu"}
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU: {{ $labels.container }} at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Container {{ $labels.container }} in pod {{ $labels.pod }}
+            ({{ $labels.namespace }}) is using {{ $value | printf "%.1f" }}% CPU limit.
+
+      - alert: ContainerCPUThrottling
+        expr: |
+          rate(container_cpu_throttled_seconds_total{container!=""}[5m])
+          /
+          rate(container_cpu_usage_seconds_total{container!=""}[5m]) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU throttling on {{ $labels.container }}"
+          description: >
+            Container {{ $labels.container }} is being CPU throttled >25%.
+
+  # ─── USE CASE 3 — High Memory ─────────────────────────────────────────────
+  - name: memory-usage
+    rules:
+      - alert: ContainerHighMemory
+        expr: |
+          (
+            container_memory_working_set_bytes{container!="",container!="POD"}
+            /
+            on(namespace, pod, container)
+            kube_pod_container_resource_limits{resource="memory"}
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory: {{ $labels.container }} at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Container {{ $labels.container }} in pod {{ $labels.pod }}
+            is using {{ $value | printf "%.1f" }}% of its memory limit.
+
+      - alert: ContainerMemoryCritical
+        expr: |
+          (
+            container_memory_working_set_bytes{container!="",container!="POD"}
+            /
+            on(namespace, pod, container)
+            kube_pod_container_resource_limits{resource="memory"}
+          ) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL memory: {{ $labels.container }} at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Container {{ $labels.container }} is at {{ $value | printf "%.1f" }}% memory.
+            OOM kill imminent.
+
+  # ─── USE CASE 4 — Node Health ─────────────────────────────────────────────
+  - name: node-health
+    rules:
+      - alert: NodeNotReady
+        expr: |
+          kube_node_status_condition{condition="Ready", status="true"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node }} is NOT ready"
+          description: >
+            Kubernetes node {{ $labels.node }} has been NotReady for 1 minute.
+            Pods will be evicted after 5 minutes.
+
+      - alert: NodeHighCPU
+        expr: |
+          (1 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} CPU at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Node {{ $labels.instance }} CPU above 85% for 5 minutes.
+
+      - alert: NodeHighMemory
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} memory at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Node {{ $labels.instance }} memory usage above 85%.
+
+      - alert: NodeDiskPressure
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+              /
+              node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}
+            )
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} disk at {{ $value | printf \"%.1f\" }}%"
+          description: >
+            Node {{ $labels.instance }} root disk is {{ $value | printf "%.1f" }}% full.
+
+  # ─── USE CASE 5 — Pod Crash Loop ──────────────────────────────────────────
+  - name: pod-crash-loop
+    rules:
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15 > 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: >
+            Pod {{ $labels.pod }} in {{ $labels.namespace }}
+            restarted >3 times in 15 minutes.
+            Check: kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }} --previous
+
+      - alert: PodRestartingFrequently
+        expr: |
+          kube_pod_container_status_restarts_total > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} has restarted {{ $value }} times"
+          description: >
+            Pod {{ $labels.pod }} in {{ $labels.namespace }}
+            total restart count is {{ $value }}.
+
+  # ─── USE CASE 6 — OOM Killed ──────────────────────────────────────────────
+  - name: oom-killed
+    rules:
+      - alert: ContainerOOMKilled
+        expr: |
+          kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.container }} was OOM killed"
+          description: >
+            Container {{ $labels.container }} in pod {{ $labels.pod }}
+            ({{ $labels.namespace }}) exceeded its memory limit and was killed.
+            Increase memory limit or fix the memory leak.

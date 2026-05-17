@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: comment-service
-          image: 508262720940.dkr.ecr.us-west-2.amazonaws.com/blog-comment-service:latest
+          image: 053160386547.dkr.ecr.ap-south-1.amazonaws.com/blog-comment-service:latest
           command: ["sh", "-c", "npx prisma db push --skip-generate && node dist/index.js"]
           ports:
             - containerPort: 3003

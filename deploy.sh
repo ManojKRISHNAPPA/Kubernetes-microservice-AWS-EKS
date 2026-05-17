@@ -22,9 +22,9 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # DEFAULT CONFIGURATION  (edit these or override via CLI flags)
 # ─────────────────────────────────────────────────────────────────────────────
-AWS_ACCOUNT_ID="508262720940"
-AWS_REGION="us-west-2"
-EKS_CLUSTER="project-k8s-cluster"
+AWS_ACCOUNT_ID="053160386547"
+AWS_REGION="ap-northeast-1"
+EKS_CLUSTER="quantam-cluster"
 NAMESPACE="blog"
 IMAGE_TAG=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
 
